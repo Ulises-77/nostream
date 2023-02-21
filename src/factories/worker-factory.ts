@@ -1,6 +1,4 @@
 import { is, path, pathSatisfies } from 'ramda'
-import express from 'express'
-import helmet from 'helmet'
 import http from 'http'
 import process from 'process'
 import { WebSocketServer } from 'ws'
@@ -8,9 +6,8 @@ import { WebSocketServer } from 'ws'
 import { getMasterDbClient, getReadReplicaDbClient } from '../database/client'
 import { AppWorker } from '../app/worker'
 import { createSettings } from '../factories/settings-factory'
+import { createWebApp } from './web-app-factory'
 import { EventRepository } from '../repositories/event-repository'
-import { rateLimiterMiddleware } from '../handlers/request-handlers/rate-limiter-middleware'
-import router from '../routes'
 import { UserRepository } from '../repositories/user-repository'
 import { webSocketAdapterFactory } from './websocket-adapter-factory'
 import { WebSocketServerAdapter } from '../adapters/web-socket-server-adapter'
@@ -23,27 +20,7 @@ export const workerFactory = (): AppWorker => {
 
   const settings = createSettings()
 
-  const app = express()
-  app
-    .disable('x-powered-by')
-    .use(rateLimiterMiddleware)
-    .use(helmet.contentSecurityPolicy({
-      directives: {
-        /**
-         * TODO: Remove 'unsafe-inline'
-         */
-        'img-src': ["'self'", 'https://cdn.zebedee.io/an/nostr/'],
-        'connect-src': [settings.info.relay_url as string],
-        'default-src': ['"self"'],
-        'script-src-attr': ["'unsafe-inline'"],
-        'script-src': ["'self'", "'unsafe-inline'", 'https://cdn.jsdelivr.net/npm/', 'https://unpkg.com/', 'https://cdnjs.cloudflare.com/ajax/libs/'],
-        'style-src': ["'self'", 'https://cdn.jsdelivr.net/npm/'],
-        'font-src': ["'self'", 'https://cdn.jsdelivr.net/npm/'],
-      },
-    }))
-    .use('/favicon.ico', express.static('./resources/favicon.ico'))
-    .use('/css', express.static('./resources/css'))
-    .use(router)
+  const app = createWebApp()
 
   // deepcode ignore HttpToHttps: we use proxies
   const server = http.createServer(app)
@@ -60,6 +37,23 @@ export const workerFactory = (): AppWorker => {
   const webSocketServer = new WebSocketServer({
     server,
     maxPayload: maxPayloadSize ?? 131072, // 128 kB
+    perMessageDeflate: {
+      zlibDeflateOptions: {
+        chunkSize: 1024,
+        memLevel: 7,
+        level: 3,
+      },
+      zlibInflateOptions: {
+        chunkSize: 10 * 1024,
+      },
+      clientNoContextTakeover: true, // Defaults to negotiated value.
+      serverNoContextTakeover: true, // Defaults to negotiated value.
+      serverMaxWindowBits: 10, // Defaults to negotiated value.
+      // Below options specified as default values.
+      concurrencyLimit: 10, // Limits zlib concurrency for perf.
+      threshold: 1024, // Size (in bytes) below which messages
+      // should not be compressed if context takeover is disabled.
+    },
   })
   const adapter = new WebSocketServerAdapter(
     server,
